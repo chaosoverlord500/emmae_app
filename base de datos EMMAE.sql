@@ -27,7 +27,8 @@ CREATE TABLE estudiantes (
     nombre VARCHAR(100) NOT NULL,
     apellido VARCHAR(100) NOT NULL,
     instrumento VARCHAR(100) NOT NULL,
-    piano_complementario BOOLEAN NOT NULL DEFAULT FALSE
+    piano_complementario BOOLEAN NOT NULL DEFAULT FALSE,
+    tiene_prestamo_activo BOOLEAN NOT NULL DEFAULT FALSE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ===========================================================================
