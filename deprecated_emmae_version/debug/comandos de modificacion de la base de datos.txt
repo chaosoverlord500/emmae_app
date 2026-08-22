@@ -1,0 +1,43 @@
+-- Insertar docente
+INSERT INTO docente (cedula, nombre, apellido) VALUES (12345678, 'Juan', 'Pérez');
+
+-- Insertar estudiante CON cédula y piano_complementario = FALSE
+INSERT INTO estudiantes (cedula, nombre, apellido, instrumento, piano_complementario) 
+VALUES (11223344, 'Carlos', 'Rodríguez', 'piano', FALSE);
+
+-- Insertar estudiante SIN cédula y piano_complementario = TRUE
+INSERT INTO estudiantes (nombre, apellido, instrumento, piano_complementario) 
+VALUES ('Ana', 'López', 'violín', TRUE);
+
+-- ERROR: No puedes insertar sin piano_complementario (es obligatorio)
+-- INSERT INTO estudiantes (nombre, apellido, instrumento) VALUES ('x', 'y', 'piano');
+
+-- Ver todos
+SELECT * FROM estudiantes;
+
+-- Ver estudiantes inscritos a piano complementario
+SELECT * FROM estudiantes WHERE piano_complementario = TRUE;
+
+-- Ver estudiantes NO inscritos a piano complementario
+SELECT * FROM estudiantes WHERE piano_complementario = FALSE;
+
+-- Ver estudiantes sin cédula
+SELECT * FROM estudiantes WHERE cedula IS NULL;
+
+-- Ver estudiantes con cédula
+SELECT * FROM estudiantes WHERE cedula IS NOT NULL;
+
+-- Inscribir a piano complementario
+UPDATE estudiantes SET piano_complementario = TRUE WHERE id_estudiante = 1;
+
+-- Sacar de piano complementario
+UPDATE estudiantes SET piano_complementario = FALSE WHERE id_estudiante = 1;
+
+-- Agregar cédula
+UPDATE estudiantes SET cedula = 99999999 WHERE id_estudiante = 2;
+
+-- Cambiar instrumento
+UPDATE estudiantes SET instrumento = 'cello' WHERE id_estudiante = 1;
+
+DELETE FROM docente WHERE id_docente = 1;
+DELETE FROM estudiantes WHERE id_estudiante = 1;
