@@ -1,15 +1,109 @@
 import datetime
+import json
+import os
+import re
 import tkinter as tk
 from tkinter import messagebox
 import ttkbootstrap as ttk
 from ttkbootstrap.scrolled import ScrolledFrame
+import mysql.connector as dbconnector
 
-from modules import db_con as DB_con, user_management as User_Manager
+from modules import user_management as User_Manager
 from modules.validators import validate_email, validate_phone_rest, validate_simple_number
 from modules import db_queries as db_q
 
+CONFIG_FILE = "db_config.json"
+
+INSTRUMENTS = ["Piano", "Violin", "Viola", "Chelo", "Bajo", "Guitarra", "Cuatro", "Trompeta", "Trombon", "Percusion", "Flauta Dulce", "Flauta Transversa"]
+STUDENT_INSTRUMENTS = INSTRUMENTS + ["Canto"]
+MDA_ITEMS = ["Pupitre", "Silla", "Atril", "Libro"]
+
+
+def validate_name_text(text):
+    """Ensures names do not contain numbers or invalid symbols."""
+    return bool(re.match("^[a-zA-ZáéíóúÁÉÍÓÚñÑ\\s]*$", text))
+
+
+def validate_full_email(email):
+    """Validates real and valid email addresses."""
+    pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
+    return bool(re.match(pattern, email))
+
+
+def get_db_credentials():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    
+    root = tk.Tk()
+    root.withdraw()
+    
+    config = {}
+    dialog = tk.Toplevel(root)
+    dialog.title("Configuración de Base de Datos")
+    dialog.geometry("360x260")
+    dialog.grab_set()
+    
+    tk.Label(dialog, text="Configurar Conexión a Base de Datos", font=("Arial", 12, "bold")).pack(pady=10)
+    
+    tk.Label(dialog, text="Host (Predeterminado: localhost):").pack(anchor="w", padx=20)
+    host_entry = tk.Entry(dialog, width=32)
+    host_entry.insert(0, "localhost")
+    host_entry.pack(padx=20, pady=5)
+    
+    tk.Label(dialog, text="Usuario (Predeterminado: root):").pack(anchor="w", padx=20)
+    user_entry = tk.Entry(dialog, width=32)
+    user_entry.insert(0, "root")
+    user_entry.pack(padx=20, pady=5)
+    
+    tk.Label(dialog, text="Contraseña:").pack(anchor="w", padx=20)
+    pass_entry = tk.Entry(dialog, width=32, show="*")
+    pass_entry.pack(padx=20, pady=5)
+    
+    def save_config():
+        config["host"] = host_entry.get().strip() or "localhost"
+        config["user"] = user_entry.get().strip() or "root"
+        config["password"] = pass_entry.get().strip()
+        config["database"] = "emmae_basededatos"
+        
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(config, f)
+        dialog.destroy()
+        root.destroy()
+        
+    tk.Button(dialog, text="Guardar y Conectar", command=save_config, bg="green", fg="white").pack(pady=15)
+    root.wait_window(dialog)
+    
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    return {"host": "localhost", "user": "root", "password": "", "database": "emmae_basededatos"}
+
+
+def connect_to_db():
+    creds = get_db_credentials()
+    conn = ""
+    try:
+        conn = dbconnector.connect(
+            host=creds.get("host", "localhost"),
+            user=creds.get("user", "root"),
+            password=creds.get("password", ""),
+            database=creds.get("database", "emmae_basededatos")
+        )
+        print("Status - Exitoso", "Base de datos conectada")
+        return conn
+    except dbconnector.Error as err:
+        print("Status - Error", f"No se pudo conectar: {err}")
+        if os.path.exists(CONFIG_FILE):
+            os.remove(CONFIG_FILE)
+        raise err
+
+
 try:
-    conn = DB_con.connect_to_db()
+    conn = connect_to_db()
     cursor = conn.cursor()
 except ImportError:
     print("Error connecting to the database")
@@ -200,13 +294,9 @@ class InteractiveWorkspace(ttk.Frame):
             "instrumentos": lambda: self.render_generic_resource_operations(
                 table="instrumentos", id_col="id_instrumento", type_col="tipo_instrumento", 
                 status_col="estado_instrumento", avail_col="instrumento_disponible", 
-                label_text="Instrumento", dropdown_func=db_q.get_instruments_dropdown
+                label_text="Instrumento", dropdown_func=db_q.get_instruments_dropdown, items_source=INSTRUMENTS, allow_custom_id=True, has_availability=True, avail_mod_only=True
             ),
-            "m.d.a": lambda: self.render_generic_resource_operations(
-                table="material_de_apoyo", id_col="id_mda", type_col="tipo_mda", 
-                status_col="estado_mda", avail_col="mda_disponible", 
-                label_text="Material (MDA)", dropdown_func=db_q.get_materials_dropdown
-            ),
+            "m.d.a": lambda: self.render_mda_operations(),
             "salones": self.render_classroom_operations
         }
         
@@ -230,47 +320,49 @@ class InteractiveWorkspace(ttk.Frame):
             entry_last_name = self.create_labeled_entry(form, "Apellido:")
 
             ttk.Label(form, text="Especialidad:", bootstyle="inverse-light").pack(anchor="w", pady=(5, 2))
-            cb_specialty = ttk.Combobox(form, values=["Canto", "Piano", "Guitarra", "Violín"], state="readonly", width=38)
+            cb_specialty = ttk.Combobox(form, values=INSTRUMENTS, state="readonly", width=38)
             cb_specialty.current(0)
             cb_specialty.pack(anchor="w", pady=(0, 10))
 
-            var_has_loan = tk.BooleanVar(value=False)
-            ttk.Checkbutton(form, text="Tiene Préstamo", variable=var_has_loan, bootstyle="square-toggle").pack(anchor="w", pady=10)
-
             var_is_admin = tk.BooleanVar(value=False)
-            entry_admin_pass = self.create_labeled_entry(form, "Contraseña del Administrador:", show="*")
-            entry_admin_pass.config(state="disabled")
+            admin_pass_container = ttk.Frame(form)
+            
+            ttk.Label(admin_pass_container, text="Contraseña del Administrador:", bootstyle="inverse-light").pack(anchor="w", pady=(2, 2))
+            entry_admin_pass = ttk.Entry(admin_pass_container, width=40, show="*")
+            entry_admin_pass.pack(anchor="w", pady=(0, 5))
 
             def toggle_admin_pass():
                 if var_is_admin.get():
-                    entry_admin_pass.config(state="normal")
+                    admin_pass_container.pack(after=chk_admin, anchor="w", pady=5, fill="x")
                 else:
                     entry_admin_pass.delete(0, tk.END)
-                    entry_admin_pass.config(state="disabled")
+                    admin_pass_container.pack_forget()
 
-            ttk.Checkbutton(
+            chk_admin = ttk.Checkbutton(
                 form, text="Administrador", variable=var_is_admin, 
                 bootstyle="square-toggle", command=toggle_admin_pass
-            ).pack(anchor="w", pady=5)
+            )
+            chk_admin.pack(anchor="w", pady=5)
 
             entry_email = self.create_labeled_entry(form, "Correo Electrónico:")
             cb_prefix, entry_phone_rest = self.create_phone_input(form, validate_phone_rest)
+
+            btn_save = ttk.Button(form, text=("Modificar" if is_mod else "Guardar Registro"), bootstyle=("primary" if is_mod else "success"))
 
             if is_mod:
                 def load_teacher_data(event):
                     selected = cb_search.get()
                     if selected:
                         self.selected_id = selected.split(" - ")[0]
-                        cursor.execute("SELECT nombre_docente, apellido_docente, especialidad_primaria, docente_tiene_prestamo, correo_docente, telefono_docente FROM docente WHERE cedula_docente = %s", (self.selected_id,))
+                        cursor.execute("SELECT nombre_docente, apellido_docente, especialidad_primaria, correo_docente, telefono_docente FROM docente WHERE cedula_docente = %s", (self.selected_id,))
                         row = cursor.fetchone()
                         if row:
                             entry_first_name.delete(0, tk.END); entry_first_name.insert(0, row[0])
                             entry_last_name.delete(0, tk.END); entry_last_name.insert(0, row[1])
                             cb_specialty.set(row[2])
-                            var_has_loan.set(bool(row[3]))
-                            entry_email.delete(0, tk.END); entry_email.insert(0, row[4])
+                            entry_email.delete(0, tk.END); entry_email.insert(0, row[3])
                             
-                            phone = row[5] or ""
+                            phone = row[4] or ""
                             valid_prefixes = ["0424", "0414", "0276", "0416", "0426", "0212", "0412"]
                             if len(phone) >= 4 and phone[:4] in valid_prefixes:
                                 cb_prefix.set(phone[:4])
@@ -281,11 +373,12 @@ class InteractiveWorkspace(ttk.Frame):
 
                             if db_q.check_is_admin(self.selected_id):
                                 var_is_admin.set(True)
-                                entry_admin_pass.config(state="normal")
+                                admin_pass_container.pack(after=chk_admin, anchor="w", pady=5, fill="x")
                                 entry_admin_pass.delete(0, tk.END); entry_admin_pass.insert(0, db_q.get_admin_password(self.selected_id))
                             else:
                                 var_is_admin.set(False)
-                                entry_admin_pass.delete(0, tk.END); entry_admin_pass.config(state="disabled")
+                                entry_admin_pass.delete(0, tk.END)
+                                admin_pass_container.pack_forget()
 
                 cb_search.bind("<<ComboboxSelected>>", load_teacher_data)
 
@@ -294,9 +387,9 @@ class InteractiveWorkspace(ttk.Frame):
                 first_name = entry_first_name.get().strip()
                 last_name = entry_last_name.get().strip()
                 specialty = cb_specialty.get()
-                has_loan = var_has_loan.get()
                 email = entry_email.get().strip()
-                phone = f"{cb_prefix.get()}{entry_phone_rest.get().strip()}"
+                phone_digits = entry_phone_rest.get().strip()
+                phone = f"{cb_prefix.get()}{phone_digits}"
                 is_admin = var_is_admin.get()
                 admin_pass = entry_admin_pass.get().strip()
 
@@ -304,18 +397,22 @@ class InteractiveWorkspace(ttk.Frame):
                     return messagebox.showerror("Error de Validación", "La cédula debe ser un valor numérico.")
                 if not first_name or not last_name:
                     return messagebox.showerror("Error de Validación", "El nombre y apellido son obligatorios.")
+                if not validate_name_text(first_name) or not validate_name_text(last_name):
+                    return messagebox.showerror("Error de Validación", "Los nombres y apellidos no deben contener números.")
                 if is_admin and not admin_pass:
                     return messagebox.showerror("Error de Validación", "La contraseña es obligatoria para el administrador.")
-                if not validate_email(email):
+                if not validate_full_email(email):
                     return messagebox.showerror("Error de Validación", "El formato del correo electrónico es inválido.")
+                if len(phone_digits) < 7:
+                    return messagebox.showerror("Error de Validación", "El número de teléfono tiene caracteres insuficientes.")
 
                 try:
                     if is_mod:
-                        query = """UPDATE docente SET nombre_docente=%s, apellido_docente=%s, especialidad_primaria=%s, docente_tiene_prestamo=%s, correo_docente=%s, telefono_docente=%s WHERE cedula_docente=%s"""
-                        cursor.execute(query, (first_name, last_name, specialty, has_loan, email, phone, teacher_id))
+                        query = """UPDATE docente SET nombre_docente=%s, apellido_docente=%s, especialidad_primaria=%s, correo_docente=%s, telefono_docente=%s WHERE cedula_docente=%s"""
+                        cursor.execute(query, (first_name, last_name, specialty, email, phone, teacher_id))
                     else:
-                        query = """INSERT INTO docente (cedula_docente, nombre_docente, apellido_docente, especialidad_primaria, docente_tiene_prestamo, correo_docente, telefono_docente) VALUES (%s, %s, %s, %s, %s, %s, %s)"""
-                        cursor.execute(query, (int(teacher_id), first_name, last_name, specialty, has_loan, email, phone))
+                        query = """INSERT INTO docente (cedula_docente, nombre_docente, apellido_docente, especialidad_primaria, correo_docente, telefono_docente) VALUES (%s, %s, %s, %s, %s, %s)"""
+                        cursor.execute(query, (int(teacher_id), first_name, last_name, specialty, email, phone))
 
                     conn.commit()
 
@@ -329,9 +426,8 @@ class InteractiveWorkspace(ttk.Frame):
                 except Exception as ex:
                     messagebox.showerror("Database Error", f"Error al guardar: {ex}")
 
-            btn_text = "Modificar" if is_mod else "Guardar Registro"
-            btn_style = "primary" if is_mod else "success"
-            ttk.Button(form, text=btn_text, bootstyle=btn_style, command=save_teacher).pack(anchor="w", pady=10)
+            btn_save.config(command=save_teacher)
+            btn_save.pack(anchor="w", pady=10)
 
         elif self.current_action == "Buscar":
             entry_filter = self.create_labeled_entry(self.content_area, "Filtrar Docente:")
@@ -343,9 +439,9 @@ class InteractiveWorkspace(ttk.Frame):
                     w.destroy()
                 term = f"%{entry_filter.get().strip()}%"
                 try:
-                    cursor.execute("SELECT cedula_docente, nombre_docente, apellido_docente, telefono_docente, correo_docente, especialidad_primaria, docente_tiene_prestamo FROM docente WHERE nombre_docente LIKE %s OR cedula_docente LIKE %s", (term, term))
+                    cursor.execute("SELECT cedula_docente, nombre_docente, apellido_docente, telefono_docente, correo_docente, especialidad_primaria FROM docente WHERE nombre_docente LIKE %s OR cedula_docente LIKE %s", (term, term))
                     for r in cursor.fetchall():
-                        ttk.Label(scroll, text=f"Cédula: {r[0]} | Docente: {r[1]} {r[2]} | Teléfono: {r[3]} | Email: {r[4]} | Especialidad: {r[5]} | ¿En Préstamo?: {'Sí' if r[6] else 'No'}", font=("Courier", 10)).pack(anchor="w", padx=10, pady=4)
+                        ttk.Label(scroll, text=f"Cédula: {r[0]} | Docente: {r[1]} {r[2]} | Teléfono: {r[3]} | Email: {r[4]} | Especialidad: {r[5]}", font=("Courier", 10)).pack(anchor="w", padx=10, pady=4)
                 except Exception as ex:
                     print(ex)
 
@@ -353,20 +449,59 @@ class InteractiveWorkspace(ttk.Frame):
             search_teachers()
 
     def render_student_operations(self):
-        if self.current_action == "Añadir":
+        if self.current_action in ["Añadir", "Modificar"]:
+            is_mod = self.current_action == "Modificar"
+            
+            if is_mod:
+                ttk.Label(self.content_area, text="Seleccione Estudiante:", bootstyle="inverse-light").pack(anchor="w", pady=2)
+                cb_search = ttk.Combobox(self.content_area, values=db_q.get_students_dropdown(cursor), state="readonly", width=40)
+                cb_search.pack(anchor="w", pady=(0, 15))
+
             form = ScrolledFrame(self.content_area, bootstyle="round")
             form.pack(fill="both", expand=True)
 
-            entry_id = self.create_labeled_entry(form, "Cédula Estudiante:", validate_type=validate_simple_number)
             entry_first_name = self.create_labeled_entry(form, "Nombre Estudiante:")
             entry_last_name = self.create_labeled_entry(form, "Apellido Estudiante:")
-            entry_instrument = self.create_labeled_entry(form, "Instrumento Principal:")
+            entry_age = self.create_labeled_entry(form, "Edad:", validate_type=validate_simple_number)
+
+            var_has_id = tk.BooleanVar(value=True)
+            id_container = ttk.Frame(form)
+            entry_id = self.create_labeled_entry(id_container, "Cédula Estudiante:")
+
+            def update_id_state():
+                try:
+                    age_val = int(entry_age.get().strip()) if entry_age.get().strip().isdigit() else 0
+                except ValueError:
+                    age_val = 0
+
+                if age_val < 9 or age_val > 120:
+                    var_has_id.set(False)
+                    id_container.pack_forget()
+                else:
+                    if var_has_id.get():
+                        id_container.pack(after=chk_id, anchor="w", fill="x", pady=5)
+                    else:
+                        id_container.pack_forget()
+
+            def toggle_id_checkbox():
+                if var_has_id.get():
+                    id_container.pack(after=chk_id, anchor="w", fill="x", pady=5)
+                else:
+                    id_container.pack_forget()
+
+            chk_id = ttk.Checkbutton(form, text="Tiene Cédula", variable=var_has_id, bootstyle="square-toggle", command=toggle_id_checkbox)
+            chk_id.pack(anchor="w", pady=5)
+            id_container.pack(after=chk_id, anchor="w", fill="x", pady=5)
+
+            entry_age.bind("<KeyRelease>", lambda e: update_id_state())
+
+            ttk.Label(form, text="Instrumento Principal:", bootstyle="inverse-light").pack(anchor="w", pady=(5, 2))
+            cb_instrument = ttk.Combobox(form, values=STUDENT_INSTRUMENTS, state="readonly", width=38)
+            cb_instrument.current(0)
+            cb_instrument.pack(anchor="w", pady=(0, 10))
 
             var_piano = tk.BooleanVar(value=False)
             ttk.Checkbutton(form, text="Piano Complementario", variable=var_piano, bootstyle="square-toggle").pack(anchor="w", pady=5)
-
-            var_has_loan = tk.BooleanVar(value=False)
-            ttk.Checkbutton(form, text="Tiene Préstamo", variable=var_has_loan, bootstyle="square-toggle").pack(anchor="w", pady=5)
 
             entry_year = self.create_labeled_entry(form, "Año Cursante:")
             entry_email = self.create_labeled_entry(form, "Correo Estudiante:")
@@ -374,55 +509,91 @@ class InteractiveWorkspace(ttk.Frame):
             entry_rep_phone = self.create_labeled_entry(form, "Teléfono Representante (Opcional):")
             entry_rep_email = self.create_labeled_entry(form, "Correo Representante (Opcional):")
 
+            if is_mod:
+                def load_student_data(event):
+                    selected = cb_search.get()
+                    if selected:
+                        self.selected_id = selected.split(" - ")[0]
+                        cursor.execute("SELECT nombre_estudiante, apellido_estudiante, instrumento_estudiante, tiene_piano_complementario, ano_cursante, telefono_estudiante, correo_estudiante, telefono_representante, correo_representante FROM estudiante WHERE cedula_estudiante=%s", (self.selected_id,))
+                        row = cursor.fetchone()
+                        if row:
+                            entry_first_name.delete(0, tk.END); entry_first_name.insert(0, row[0])
+                            entry_last_name.delete(0, tk.END); entry_last_name.insert(0, row[1])
+                            cb_instrument.set(row[2])
+                            var_piano.set(bool(row[3]))
+                            entry_year.delete(0, tk.END); entry_year.insert(0, row[4])
+                            
+                            phone = row[5] or ""
+                            valid_prefixes = ["0424", "0414", "0276", "0416", "0426", "0212", "0412"]
+                            if len(phone) >= 4 and phone[:4] in valid_prefixes:
+                                cb_prefix.set(phone[:4])
+                                entry_phone_rest.delete(0, tk.END); entry_phone_rest.insert(0, phone[4:])
+                            else:
+                                cb_prefix.current(0)
+                                entry_phone_rest.delete(0, tk.END); entry_phone_rest.insert(0, phone)
+
+                            entry_email.delete(0, tk.END); entry_email.insert(0, row[6])
+                            entry_rep_phone.delete(0, tk.END); entry_rep_phone.insert(0, row[7] or "")
+                            entry_rep_email.delete(0, tk.END); entry_rep_email.insert(0, row[8] or "")
+                            
+                            entry_age.delete(0, tk.END)
+                            entry_age.insert(0, "10")
+                            var_has_id.set(True)
+                            id_container.pack(after=chk_id, anchor="w", fill="x", pady=5)
+                            entry_id.delete(0, tk.END); entry_id.insert(0, str(self.selected_id))
+
+                cb_search.bind("<<ComboboxSelected>>", load_student_data)
+
             def save_student():
-                student_id = entry_id.get().strip()
                 first_name = entry_first_name.get().strip()
                 last_name = entry_last_name.get().strip()
-                if not student_id.isdigit() or not first_name or not last_name:
-                    return messagebox.showerror("Error", "Campos obligatorios incorrectos.")
+                age_str = entry_age.get().strip()
+                email = entry_email.get().strip()
+                phone_digits = entry_phone_rest.get().strip()
+
+                if not first_name or not last_name:
+                    return messagebox.showerror("Error", "Nombre y apellido son obligatorios.")
+                if not validate_name_text(first_name) or not validate_name_text(last_name):
+                    return messagebox.showerror("Error", "Los nombres y apellidos no deben contener números.")
+                if not is_mod and (not age_str.isdigit() or int(age_str) <= 0 or int(age_str) > 120):
+                    return messagebox.showerror("Error", "Por favor ingrese una edad válida y real (positiva).")
+                if not validate_full_email(email):
+                    return messagebox.showerror("Error", "El correo electrónico del estudiante no es válido.")
+                if len(phone_digits) < 7:
+                    return messagebox.showerror("Error", "El número de teléfono tiene caracteres insuficientes.")
+
+                if is_mod:
+                    student_id = self.selected_id
+                else:
+                    if var_has_id.get():
+                        student_id = entry_id.get().strip()
+                        if not student_id.isdigit():
+                            return messagebox.showerror("Error", "La cédula debe ser numérica.")
+                    else:
+                        try:
+                            cursor.execute("SELECT COUNT(*) FROM estudiante WHERE cedula_estudiante LIKE 'E%'")
+                            count = cursor.fetchone()[0] + 1
+                        except Exception:
+                            count = 1
+                        student_id = f"E{count}"
+
                 try:
-                    query = """INSERT INTO estudiante (cedula_estudiante, nombre_estudiante, apellido_estudiante, instrumento_estudiante, tiene_piano_complementario, estudiante_tiene_prestamo, ano_cursante, telefono_estudiante, correo_estudiante, telefono_representante, correo_representante) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
-                    cursor.execute(query, (int(student_id), first_name, last_name, entry_instrument.get(), var_piano.get(), var_has_loan.get(), entry_year.get(), f"{cb_prefix.get()}{entry_phone_rest.get()}", entry_email.get(), entry_rep_phone.get(), entry_rep_email.get()))
+                    if is_mod:
+                        query = """UPDATE estudiante SET nombre_estudiante=%s, apellido_estudiante=%s, instrumento_estudiante=%s, tiene_piano_complementario=%s, ano_cursante=%s, telefono_estudiante=%s, correo_estudiante=%s, telefono_representante=%s, correo_representante=%s WHERE cedula_estudiante=%s"""
+                        cursor.execute(query, (first_name, last_name, cb_instrument.get(), var_piano.get(), entry_year.get(), f"{cb_prefix.get()}{entry_phone_rest.get()}", email, entry_rep_phone.get(), entry_rep_email.get(), str(student_id)))
+                    else:
+                        query = """INSERT INTO estudiante (cedula_estudiante, nombre_estudiante, apellido_estudiante, instrumento_estudiante, tiene_piano_complementario, ano_cursante, telefono_estudiante, correo_estudiante, telefono_representante, correo_representante) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+                        cursor.execute(query, (str(student_id), first_name, last_name, cb_instrument.get(), var_piano.get(), entry_year.get(), f"{cb_prefix.get()}{entry_phone_rest.get()}", email, entry_rep_phone.get(), entry_rep_email.get()))
+                    
                     conn.commit()
-                    messagebox.showinfo("Éxito", "Estudiante guardado.")
+                    messagebox.showinfo("Éxito", f"Estudiante {'modificado' : 'guardado'} con identificador: {student_id}")
                     self.render_form_view()
                 except Exception as ex:
                     messagebox.showerror("Error", str(ex))
 
-            ttk.Button(form, text="Guardar Estudiante", bootstyle="success", command=save_student).pack(anchor="w", pady=10)
-
-        elif self.current_action == "Modificar":
-            ttk.Label(self.content_area, text="Seleccione Estudiante:", bootstyle="inverse-light").pack(anchor="w", pady=2)
-            cb_search = ttk.Combobox(self.content_area, values=db_q.get_students_dropdown(cursor), state="readonly", width=40)
-            cb_search.pack(anchor="w", pady=(0, 15))
-
-            form = ScrolledFrame(self.content_area, bootstyle="round")
-            form.pack(fill="both", expand=True)
-
-            entry_first_name = self.create_labeled_entry(form, "Nombre:")
-            entry_last_name = self.create_labeled_entry(form, "Apellido:")
-
-            def load_student_data(event):
-                selected = cb_search.get()
-                if selected:
-                    self.selected_id = selected.split(" - ")[0]
-                    cursor.execute("SELECT nombre_estudiante, apellido_estudiante FROM estudiante WHERE cedula_estudiante=%s", (self.selected_id,))
-                    row = cursor.fetchone()
-                    if row:
-                        entry_first_name.delete(0, tk.END); entry_first_name.insert(0, row[0])
-                        entry_last_name.delete(0, tk.END); entry_last_name.insert(0, row[1])
-
-            cb_search.bind("<<ComboboxSelected>>", load_student_data)
-
-            def update_student():
-                if not self.selected_id:
-                    return
-                cursor.execute("UPDATE estudiante SET nombre_estudiante=%s, apellido_estudiante=%s WHERE cedula_estudiante=%s", (entry_first_name.get(), entry_last_name.get(), self.selected_id))
-                conn.commit()
-                messagebox.showinfo("Éxito", "Estudiante modificado.")
-                self.render_form_view()
-
-            ttk.Button(form, text="Modificar", bootstyle="primary", command=update_student).pack(anchor="w", pady=10)
+            btn_text = "Modificar Estudiante" if is_mod else "Guardar Estudiante"
+            btn_style = "primary" if is_mod else "success"
+            ttk.Button(form, text=btn_text, bootstyle=btn_style, command=save_student).pack(anchor="w", pady=10)
 
         elif self.current_action == "Buscar":
             entry_filter = self.create_labeled_entry(self.content_area, "Filtrar por cédula o nombre:")
@@ -433,61 +604,114 @@ class InteractiveWorkspace(ttk.Frame):
                 for w in scroll.winfo_children():
                     w.destroy()
                 term = f"%{entry_filter.get().strip()}%"
-                cursor.execute("SELECT cedula_estudiante, nombre_estudiante, apellido_estudiante, instrumento_estudiante, estudiante_tiene_prestamo FROM estudiante WHERE nombre_estudiante LIKE %s OR cedula_estudiante LIKE %s", (term, term))
+                cursor.execute("SELECT cedula_estudiante, nombre_estudiante, apellido_estudiante, instrumento_estudiante FROM estudiante WHERE nombre_estudiante LIKE %s OR cedula_estudiante LIKE %s", (term, term))
                 for r in cursor.fetchall():
-                    ttk.Label(scroll, text=f"Cédula: {r[0]} | Estudiante: {r[1]} {r[2]} | Instrumento: {r[3]} | ¿En Préstamo?: {'Sí' if r[4] else 'No'}", font=("Courier", 10)).pack(anchor="w", padx=10, pady=4)
+                    ttk.Label(scroll, text=f"ID/Cédula: {r[0]} | Estudiante: {r[1]} {r[2]} | Instrumento: {r[3]}", font=("Courier", 10)).pack(anchor="w", padx=10, pady=4)
 
             entry_filter.bind("<KeyRelease>", search_students)
             search_students()
 
-    def render_generic_resource_operations(self, table, id_col, type_col, status_col, avail_col, label_text, dropdown_func):
+    def render_mda_operations(self):
         if self.current_action in ["Añadir", "Modificar"]:
             is_mod = self.current_action == "Modificar"
 
             if is_mod:
-                ttk.Label(self.content_area, text=f"Seleccione {label_text} a Modificar:", bootstyle="inverse-light").pack(anchor="w", pady=2)
-                cb_search = ttk.Combobox(self.content_area, values=dropdown_func(cursor), state="readonly", width=40)
+                ttk.Label(self.content_area, text="Seleccione Material (MDA) a Modificar:", bootstyle="inverse-light").pack(anchor="w", pady=2)
+                
+                cursor.execute("SELECT id_mda, tipo_mda, desc_mda FROM material_de_apoyo")
+                mda_rows = cursor.fetchall()
+                mda_dropdown_values = []
+                for r in mda_rows:
+                    mda_id = r[0]
+                    tipo = r[1]
+                    desc = r[2]
+                    if desc and desc.strip():
+                        mda_dropdown_values.append(f'{mda_id} - {tipo} "{desc}"')
+                    else:
+                        mda_dropdown_values.append(f'{mda_id} - {tipo}')
+
+                cb_search = ttk.Combobox(self.content_area, values=mda_dropdown_values, state="readonly", width=40)
                 cb_search.pack(anchor="w", pady=(0, 15))
 
-            entry_type = self.create_labeled_entry(self.content_area, f"Tipo de {label_text}:")
+            ttk.Label(self.content_area, text="ID del Material (MDA):", bootstyle="inverse-light").pack(anchor="w", pady=(5, 2))
+            entry_id = ttk.Entry(self.content_area, width=38)
+            entry_id.pack(anchor="w", pady=(0, 10))
 
-            ttk.Label(self.content_area, text=f"Estado del {label_text}:", bootstyle="inverse-light").pack(anchor="w")
-            cb_status = ttk.Combobox(self.content_area, values=["Ok", "Dañado"], state="readonly", width=38)
-            cb_status.current(0)
-            cb_status.pack(anchor="w", pady=10)
+            ttk.Label(self.content_area, text="Tipo de Material (MDA):", bootstyle="inverse-light").pack(anchor="w", pady=(5, 2))
+            entry_type = ttk.Combobox(self.content_area, values=MDA_ITEMS, state="readonly", width=38)
+            entry_type.current(0)
+            entry_type.pack(anchor="w", pady=(0, 10))
 
+            entry_desc = self.create_labeled_entry(self.content_area, "Descripción (desc_mda):")
+
+            # Changed from Combobox to standard Entry
+            entry_status = self.create_labeled_entry(self.content_area, "Estado del Material (MDA):")
+
+            show_availability = is_mod
             var_available = tk.BooleanVar(value=True)
-            ttk.Checkbutton(self.content_area, text="Disponible", variable=var_available, bootstyle="square-toggle").pack(anchor="w", pady=10)
+            if show_availability:
+                ttk.Checkbutton(self.content_area, text="Disponible", variable=var_available, bootstyle="square-toggle").pack(anchor="w", pady=10)
 
             if is_mod:
                 def load_item(event):
                     selected = cb_search.get()
                     if selected:
                         self.selected_id = selected.split(" - ")[0]
-                        cursor.execute(f"SELECT {type_col}, {status_col}, {avail_col} FROM {table} WHERE {id_col}=%s", (self.selected_id,))
+                        entry_id.delete(0, tk.END)
+                        entry_id.insert(0, str(self.selected_id))
+                        
+                        cursor.execute("SELECT tipo_mda, desc_mda, estado_mda, mda_disponible FROM material_de_apoyo WHERE id_mda=%s", (self.selected_id,))
                         row = cursor.fetchone()
                         if row:
-                            entry_type.delete(0, tk.END); entry_type.insert(0, row[0])
-                            cb_status.set(row[1])
-                            var_available.set(bool(row[2]))
+                            entry_type.set(row[0])
+                            entry_desc.delete(0, tk.END)
+                            if row[1]:
+                                entry_desc.insert(0, row[1])
+                            entry_status.delete(0, tk.END)
+                            if row[2]:
+                                entry_status.insert(0, row[2])
+                            var_available.set(bool(row[3]))
 
                 cb_search.bind("<<ComboboxSelected>>", load_item)
+            else:
+                try:
+                    cursor.execute("SELECT MAX(id_mda) FROM material_de_apoyo")
+                    res = cursor.fetchone()[0]
+                    next_val = (res + 1) if res else 1
+                    entry_id.insert(0, str(next_val))
+                except Exception:
+                    entry_id.insert(0, "1")
 
             def save_item():
-                mat_type = entry_type.get().strip()
-                status = cb_status.get()
-                available = var_available.get()
+                mat_type = entry_type.get()
+                desc_val = entry_desc.get().strip()
+                status = entry_status.get().strip()
+                available = var_available.get() if show_availability else True
+                custom_id = entry_id.get().strip()
 
-                if is_mod:
-                    if not self.selected_id:
-                        return
-                    cursor.execute(f"UPDATE {table} SET {type_col}=%s, {status_col}=%s, {avail_col}=%s WHERE {id_col}=%s", (mat_type, status, available, self.selected_id))
-                else:
-                    cursor.execute(f"INSERT INTO {table} ({type_col}, {status_col}, {avail_col}) VALUES (%s, %s, %s)", (mat_type, status, available))
+                if not custom_id.isdigit():
+                    return messagebox.showerror("Error", "El ID debe ser numérico.")
+                item_id_val = int(custom_id)
 
-                conn.commit()
-                messagebox.showinfo("Éxito", f"{label_text} {'modificado' if is_mod else 'añadido'}.")
-                self.render_form_view()
+                try:
+                    if is_mod:
+                        if not self.selected_id:
+                            return
+                        cursor.execute(
+                            "UPDATE material_de_apoyo SET id_mda=%s, desc_mda=%s, tipo_mda=%s, estado_mda=%s, mda_disponible=%s WHERE id_mda=%s", 
+                            (item_id_val, desc_val, mat_type, status, available, self.selected_id)
+                        )
+                    else:
+                        cursor.execute(
+                            "INSERT INTO material_de_apoyo (id_mda, desc_mda, tipo_mda, estado_mda, mda_disponible) VALUES (%s, %s, %s, %s, %s)", 
+                            (item_id_val, desc_val, mat_type, status, available)
+                        )
+
+                    conn.commit()
+                    messagebox.showinfo("Éxito", f"Material (MDA) {'modificado' if is_mod else 'añadido'}.")
+                    self.render_form_view()
+                except Exception as ex:
+                    messagebox.showerror("Error", str(ex))
 
             btn_text = "Modificar" if is_mod else "Guardar"
             btn_style = "primary" if is_mod else "success"
@@ -496,9 +720,130 @@ class InteractiveWorkspace(ttk.Frame):
         elif self.current_action == "Buscar":
             scroll = ScrolledFrame(self.content_area, bootstyle="round")
             scroll.pack(fill="both", expand=True)
-            cursor.execute(f"SELECT {id_col}, {type_col}, {status_col}, {avail_col} FROM {table}")
+            cursor.execute("SELECT id_mda, desc_mda, tipo_mda, estado_mda, mda_disponible FROM material_de_apoyo")
             for r in cursor.fetchall():
-                ttk.Label(scroll, text=f"ID: {r[0]} | Tipo: {r[1]} | Estado: {r[2]} | ¿Disponible?: {'Sí' if r[3] else 'No'}", font=("Courier", 10)).pack(anchor="w", pady=4)
+                desc_str = f' | Desc: "{r[1]}"' if r[1] and r[1].strip() else ""
+                ttk.Label(scroll, text=f"ID: {r[0]}{desc_str} | Tipo: {r[2]} | Estado: {r[3]} | ¿Disponible?: {'Sí' if r[4] else 'No'}", font=("Courier", 10)).pack(anchor="w", pady=4)
+
+    def render_generic_resource_operations(self, table, id_col, type_col, status_col, avail_col, label_text, dropdown_func, items_source, allow_custom_id=False, has_availability=True, avail_mod_only=False):
+        if self.current_action in ["Añadir", "Modificar"]:
+            is_mod = self.current_action == "Modificar"
+
+            if is_mod:
+                ttk.Label(self.content_area, text=f"Seleccione {label_text} a Modificar:", bootstyle="inverse-light").pack(anchor="w", pady=2)
+                cb_search = ttk.Combobox(self.content_area, values=dropdown_func(cursor), state="readonly", width=40)
+                cb_search.pack(anchor="w", pady=(0, 15))
+
+            entry_id = None
+            if allow_custom_id:
+                ttk.Label(self.content_area, text=f"ID del {label_text}:", bootstyle="inverse-light").pack(anchor="w", pady=(5, 2))
+                entry_id = ttk.Entry(self.content_area, width=38)
+                entry_id.pack(anchor="w", pady=(0, 10))
+
+            ttk.Label(self.content_area, text=f"Tipo de {label_text}:", bootstyle="inverse-light").pack(anchor="w", pady=(5, 2))
+            entry_type = ttk.Combobox(self.content_area, values=items_source, state="readonly", width=38)
+            entry_type.current(0)
+            entry_type.pack(anchor="w", pady=(0, 10))
+
+            entry_status = self.create_labeled_entry(self.content_area, f"Estado del {label_text}:")
+
+            show_availability = has_availability and (not avail_mod_only or is_mod)
+            var_available = tk.BooleanVar(value=True)
+            if show_availability:
+                ttk.Checkbutton(self.content_area, text="Disponible", variable=var_available, bootstyle="square-toggle").pack(anchor="w", pady=10)
+
+            if is_mod:
+                def load_item(event):
+                    selected = cb_search.get()
+                    if selected:
+                        self.selected_id = selected.split(" - ")[0]
+                        if entry_id:
+                            entry_id.delete(0, tk.END)
+                            entry_id.insert(0, str(self.selected_id))
+                        
+                        query_cols = f"{type_col}, {status_col}"
+                        if has_availability:
+                            query_cols += f", {avail_col}"
+                        cursor.execute(f"SELECT {query_cols} FROM {table} WHERE {id_col}=%s", (self.selected_id,))
+                        row = cursor.fetchone()
+                        if row:
+                            entry_type.set(row[0])
+                            entry_status.delete(0, tk.END)
+                            if row[1] is not None:
+                                entry_status.insert(0, row[1])
+                            if has_availability:
+                                var_available.set(bool(row[2]))
+
+                cb_search.bind("<<ComboboxSelected>>", load_item)
+            elif allow_custom_id and entry_id:
+                try:
+                    cursor.execute(f"SELECT MAX({id_col}) FROM {table}")
+                    res = cursor.fetchone()[0]
+                    next_val = (res + 1) if res else 1
+                    entry_id.insert(0, str(next_val))
+                except Exception:
+                    entry_id.insert(0, "1")
+
+            def save_item():
+                mat_type = entry_type.get()
+                status = entry_status.get().strip()
+                available = var_available.get() if show_availability else True
+                custom_id = entry_id.get().strip() if entry_id else None
+
+                if allow_custom_id and custom_id:
+                    if not custom_id.isdigit():
+                        return messagebox.showerror("Error", "El ID debe ser numérico.")
+                    item_id_val = int(custom_id)
+                else:
+                    item_id_val = None
+
+                try:
+                    if is_mod:
+                        if not self.selected_id:
+                            return
+                        if has_availability:
+                            if allow_custom_id and item_id_val is not None and item_id_val != int(self.selected_id):
+                                cursor.execute(f"UPDATE {table} SET {id_col}=%s, {type_col}=%s, {status_col}=%s, {avail_col}=%s WHERE {id_col}=%s", (item_id_val, mat_type, status, available, self.selected_id))
+                            else:
+                                cursor.execute(f"UPDATE {table} SET {type_col}=%s, {status_col}=%s, {avail_col}=%s WHERE {id_col}=%s", (mat_type, status, available, self.selected_id))
+                        else:
+                            if allow_custom_id and item_id_val is not None and item_id_val != int(self.selected_id):
+                                cursor.execute(f"UPDATE {table} SET {id_col}=%s, {type_col}=%s, {status_col}=%s WHERE {id_col}=%s", (item_id_val, mat_type, status, self.selected_id))
+                            else:
+                                cursor.execute(f"UPDATE {table} SET {type_col}=%s, {status_col}=%s WHERE {id_col}=%s", (mat_type, status, self.selected_id))
+                    else:
+                        if has_availability:
+                            if allow_custom_id and item_id_val is not None:
+                                cursor.execute(f"INSERT INTO {table} ({id_col}, {type_col}, {status_col}, {avail_col}) VALUES (%s, %s, %s, %s)", (item_id_val, mat_type, status, available))
+                            else:
+                                cursor.execute(f"INSERT INTO {table} ({type_col}, {status_col}, {avail_col}) VALUES (%s, %s, %s)", (mat_type, status, available))
+                        else:
+                            if allow_custom_id and item_id_val is not None:
+                                cursor.execute(f"INSERT INTO {table} ({id_col}, {type_col}, {status_col}) VALUES (%s, %s, %s)", (item_id_val, mat_type, status))
+                            else:
+                                cursor.execute(f"INSERT INTO {table} ({type_col}, {status_col}) VALUES (%s, %s)", (mat_type, status))
+
+                    conn.commit()
+                    messagebox.showinfo("Éxito", f"{label_text} {'modificado' if is_mod else 'añadido'}.")
+                    self.render_form_view()
+                except Exception as ex:
+                    messagebox.showerror("Error", str(ex))
+
+            btn_text = "Modificar" if is_mod else "Guardar"
+            btn_style = "primary" if is_mod else "success"
+            ttk.Button(self.content_area, text=btn_text, bootstyle=btn_style, command=save_item).pack(anchor="w", pady=10)
+
+        elif self.current_action == "Buscar":
+            scroll = ScrolledFrame(self.content_area, bootstyle="round")
+            scroll.pack(fill="both", expand=True)
+            if has_availability:
+                cursor.execute(f"SELECT {id_col}, {type_col}, {status_col}, {avail_col} FROM {table}")
+                for r in cursor.fetchall():
+                    ttk.Label(scroll, text=f"ID: {r[0]} | Tipo: {r[1]} | Estado: {r[2]} | ¿Disponible?: {'Sí' if r[3] else 'No'}", font=("Courier", 10)).pack(anchor="w", pady=4)
+            else:
+                cursor.execute(f"SELECT {id_col}, {type_col}, {status_col} FROM {table}")
+                for r in cursor.fetchall():
+                    ttk.Label(scroll, text=f"ID: {r[0]} | Tipo: {r[1]} | Estado: {r[2]}", font=("Courier", 10)).pack(anchor="w", pady=4)
 
     def render_classroom_operations(self):
         if self.current_action in ["Añadir", "Modificar"]:
@@ -512,16 +857,55 @@ class InteractiveWorkspace(ttk.Frame):
             form = ScrolledFrame(self.content_area, bootstyle="round")
             form.pack(fill="both", expand=True)
 
+            id_display_frame = ttk.Frame(form)
+            id_display_frame.pack(anchor="w", pady=5, fill="x")
+            ttk.Label(id_display_frame, text="Número Identificador:", bootstyle="inverse-light").pack(anchor="w", pady=(2, 2))
+            entry_auto_id = ttk.Entry(id_display_frame, width=38, state="readonly")
+            entry_auto_id.pack(anchor="w", pady=(0, 5))
+
+            var_cubiculo = tk.BooleanVar(value=False)
+            
+            def calculate_next_id(*args):
+                try:
+                    if var_cubiculo.get():
+                        cursor.execute("SELECT MAX(id_salon) FROM salon WHERE id_salon >= 1000")
+                        res = cursor.fetchone()[0]
+                        seq = (res - 1000 + 1) if res and res >= 1000 else 1
+                    else:
+                        cursor.execute("SELECT MAX(id_salon) FROM salon WHERE id_salon < 1000")
+                        res = cursor.fetchone()[0]
+                        seq = (res + 1) if res and res < 1000 else 1
+                except Exception:
+                    seq = 1
+
+                entry_auto_id.config(state="normal")
+                entry_auto_id.delete(0, tk.END)
+                entry_auto_id.insert(0, str(seq))
+                entry_auto_id.config(state="readonly")
+
+            chk_cubiculo = ttk.Checkbutton(
+                form, text="Es Cubículo", variable=var_cubiculo, 
+                bootstyle="square-toggle", command=calculate_next_id
+            )
+            chk_cubiculo.pack(anchor="w", pady=5)
+
+            if not is_mod:
+                calculate_next_id()
+
             ttk.Label(form, text="Estado General del Salón:", bootstyle="inverse-light").pack(anchor="w")
             cb_status = ttk.Combobox(form, values=["Ok", "Dañado"], state="readonly", width=38)
             cb_status.current(0)
             cb_status.pack(anchor="w", pady=10)
 
             var_occupied = tk.BooleanVar(value=False)
-            ttk.Checkbutton(form, text="Salón Ocupado", variable=var_occupied, bootstyle="square-toggle").pack(anchor="w", pady=5)
-
             var_available = tk.BooleanVar(value=True)
-            ttk.Checkbutton(form, text="Salón Disponible", variable=var_available, bootstyle="square-toggle").pack(anchor="w", pady=5)
+
+            if is_mod:
+                ttk.Checkbutton(form, text="Salón Ocupado", variable=var_occupied, bootstyle="square-toggle").pack(anchor="w", pady=5)
+                ttk.Checkbutton(form, text="Salón Disponible", variable=var_available, bootstyle="square-toggle").pack(anchor="w", pady=5)
+
+            var_piano_salon = tk.BooleanVar(value=True)
+            ttk.Checkbutton(form, text="Tiene Piano", variable=var_piano_salon, bootstyle="square-toggle").pack(anchor="w", pady=5)
 
             ttk.Label(form, text="ID Piano (Opcional):", bootstyle="inverse-light").pack(anchor="w")
             cb_piano = ttk.Combobox(form, values=["Ninguno"] + db_q.get_instruments_dropdown(cursor), state="readonly", width=38)
@@ -533,31 +917,49 @@ class InteractiveWorkspace(ttk.Frame):
                     selected = cb_search.get()
                     if selected:
                         self.selected_id = selected.split(" - ")[0]
-                        cursor.execute("SELECT estado_salon, salon_ocupado, salon_disponible, id_piano FROM salon WHERE id_salon=%s", (self.selected_id,))
+                        cursor.execute("SELECT estado_salon, salon_ocupado, salon_disponible, id_piano, es_cubiculo, tiene_piano FROM salon WHERE id_salon=%s", (self.selected_id,))
                         row = cursor.fetchone()
                         if row:
                             cb_status.set(row[0])
                             var_occupied.set(bool(row[1]))
                             var_available.set(bool(row[2]))
+                            is_cub = bool(row[4])
+                            var_cubiculo.set(is_cub)
+                            var_piano_salon.set(bool(row[5]))
                             if row[3]:
                                 cb_piano.set(str(row[3]))
+                            
+                            seq_val = (int(self.selected_id) - 1000) if is_cub and int(self.selected_id) >= 1000 else int(self.selected_id)
+                            entry_auto_id.config(state="normal")
+                            entry_auto_id.delete(0, tk.END)
+                            entry_auto_id.insert(0, str(seq_val))
+                            entry_auto_id.config(state="readonly")
 
                 cb_search.bind("<<ComboboxSelected>>", load_classroom)
 
             def save_classroom():
                 piano_val = cb_piano.get().split(" - ")[0] if cb_piano.get() != "Ninguno" else None
+                seq_val = int(entry_auto_id.get())
+                
+                if var_cubiculo.get():
+                    salon_id = 1000 + seq_val
+                else:
+                    salon_id = seq_val
+
                 try:
                     if is_mod:
-                        if not self.selected_id:
-                            return
-                        cursor.execute("UPDATE salon SET estado_salon=%s, salon_ocupado=%s, salon_disponible=%s, id_piano=%s WHERE id_salon=%s", 
-                                       (cb_status.get(), var_occupied.get(), var_available.get(), piano_val, self.selected_id))
+                        cursor.execute(
+                            "UPDATE salon SET id_salon=%s, estado_salon=%s, salon_ocupado=%s, salon_disponible=%s, id_piano=%s, es_cubiculo=%s, tiene_piano=%s WHERE id_salon=%s", 
+                            (salon_id, cb_status.get(), var_occupied.get(), var_available.get(), piano_val, var_cubiculo.get(), var_piano_salon.get(), self.selected_id)
+                        )
                     else:
-                        cursor.execute("INSERT INTO salon (estado_salon, salon_ocupado, salon_disponible, id_piano) VALUES (%s, %s, %s, %s)", 
-                                       (cb_status.get(), var_occupied.get(), var_available.get(), piano_val))
+                        cursor.execute(
+                            "INSERT INTO salon (id_salon, es_cubiculo, salon_ocupado, tiene_piano, id_piano, estado_salon, salon_disponible) VALUES (%s, %s, %s, %s, %s, %s, %s)", 
+                            (salon_id, var_cubiculo.get(), False, var_piano_salon.get(), piano_val, cb_status.get(), True)
+                        )
                     
                     conn.commit()
-                    messagebox.showinfo("Éxito", f"Salón {'modificado' if is_mod else 'añadido'}.")
+                    messagebox.showinfo("Éxito", f"Salón {'modificado' if is_mod else 'añadido'} correctamente.")
                     self.render_form_view()
                 except Exception as ex:
                     messagebox.showerror("Error", str(ex))
@@ -569,9 +971,12 @@ class InteractiveWorkspace(ttk.Frame):
         elif self.current_action == "Buscar":
             scroll = ScrolledFrame(self.content_area, bootstyle="round")
             scroll.pack(fill="both", expand=True)
-            cursor.execute("SELECT id_salon, estado_salon, salon_ocupado, salon_disponible, id_piano FROM salon")
+            cursor.execute("SELECT id_salon, estado_salon, salon_ocupado, salon_disponible, id_piano, es_cubiculo FROM salon")
             for r in cursor.fetchall():
-                ttk.Label(scroll, text=f"Salón Nro: {r[0]} | Estado: {r[1]} | ¿Ocupado?: {'Sí' if r[2] else 'No'} | ¿Disponible?: {'Sí' if r[3] else 'No'} | Piano ID: {r[4] or 'Ninguno'}", font=("Courier", 10)).pack(anchor="w", pady=4)
+                is_cub = r[5]
+                tipo = "Cubículo" if is_cub else "Salón"
+                display_id = (r[0] - 1000) if is_cub and r[0] >= 1000 else r[0]
+                ttk.Label(scroll, text=f"{tipo} Nro: {display_id} | Estado: {r[1]} | ¿Ocupado?: {'Sí' if r[2] else 'No'} | ¿Disponible?: {'Sí' if r[3] else 'No'} | Piano ID: {r[4] or 'Ninguno'}", font=("Courier", 10)).pack(anchor="w", pady=4)
 
     def render_loans_operations(self):
         ttk.Label(
@@ -581,15 +986,15 @@ class InteractiveWorkspace(ttk.Frame):
         ).pack(anchor="w", pady=(0, 15))
 
         target_map = {
-            "instrumentos": ("instrumentos", "id_instrumento", "instrumento_disponible", "Instrumento"),
-            "m.d.a": ("material_de_apoyo", "id_mda", "mda_disponible", "Material (MDA)"),
-            "salones": ("salon", "id_salon", "salon_disponible", "Salón")
+            "instrumentos": ("instrumentos", "id_instrumento", "tipo_instrumento", "instrumento_disponible", "Instrumento"),
+            "m.d.a": ("material_de_apoyo", "id_mda", "tipo_mda", "mda_disponible", "Material (MDA)"),
+            "salones": ("salon", "id_salon", "id_salon", "salon_disponible", "Salón")
         }
 
         if self.name not in target_map:
             return
 
-        table_name, id_col, available_col, label_name = target_map[self.name]
+        table_name, id_col, type_col, available_col, label_name = target_map[self.name]
         item_fk_column = id_col
 
         if self.current_action == "Añadir":
@@ -597,8 +1002,34 @@ class InteractiveWorkspace(ttk.Frame):
             form.pack(fill="both", expand=True)
 
             try:
-                cursor.execute(f"SELECT {id_col} FROM {table_name} WHERE {available_col} = 1")
-                available_items = [str(r[0]) for r in cursor.fetchall()]
+                if self.name == "instrumentos":
+                    cursor.execute(f"SELECT {id_col}, {type_col} FROM {table_name} WHERE {available_col} = 1")
+                    available_items = [f"{r[1]} - {r[0]}" for r in cursor.fetchall()]
+                elif self.name == "m.d.a":
+                    cursor.execute(f"SELECT id_mda, tipo_mda, desc_mda FROM material_de_apoyo WHERE mda_disponible = 1")
+                    available_items = []
+                    for r in cursor.fetchall():
+                        mda_id = r[0]
+                        tipo = r[1]
+                        desc = r[2]
+                        if desc and desc.strip():
+                            available_items.append(f'{tipo} "{desc}" (ID: {mda_id})')
+                        else:
+                            available_items.append(f'{tipo} (ID: {mda_id})')
+                elif self.name == "salones":
+                    cursor.execute(f"SELECT {id_col}, es_cubiculo FROM {table_name} WHERE {available_col} = 1")
+                    available_items = []
+                    for r in cursor.fetchall():
+                        salon_id = r[0]
+                        es_cub = r[1]
+                        if es_cub or salon_id >= 1000:
+                            cubiculo_num = salon_id - 1000 if salon_id >= 1000 else salon_id
+                            available_items.append(f"Cubiculo {cubiculo_num} - {salon_id}")
+                        else:
+                            available_items.append(f"Salon {salon_id}")
+                else:
+                    cursor.execute(f"SELECT {id_col} FROM {table_name} WHERE {available_col} = 1")
+                    available_items = [str(r[0]) for r in cursor.fetchall()]
             except Exception:
                 available_items = []
 
@@ -606,15 +1037,33 @@ class InteractiveWorkspace(ttk.Frame):
             cb_item = ttk.Combobox(form, values=available_items, state="readonly", width=38)
             cb_item.pack(anchor="w", pady=(0, 10))
 
-            ttk.Label(form, text="Asignar a Cédula de Docente (Opcional):", bootstyle="inverse-light").pack(anchor="w", pady=2)
-            cb_teacher = ttk.Combobox(form, values=["Ninguno"] + db_q.get_teachers_dropdown(cursor), state="readonly", width=38)
-            cb_teacher.current(0)
-            cb_teacher.pack(anchor="w", pady=(0, 10))
+            var_is_student_loan = tk.BooleanVar(value=True)
+            assign_container = ttk.Frame(form)
 
-            ttk.Label(form, text="Asignar a Cédula de Estudiante (Opcional):", bootstyle="inverse-light").pack(anchor="w", pady=2)
-            cb_student = ttk.Combobox(form, values=["Ninguno"] + db_q.get_students_dropdown(cursor), state="readonly", width=38)
-            cb_student.current(0)
-            cb_student.pack(anchor="w", pady=(0, 10))
+            def update_loan_target():
+                for w in assign_container.winfo_children():
+                    w.destroy()
+                if var_is_student_loan.get():
+                    ttk.Label(assign_container, text="Asignar a Estudiante:", bootstyle="inverse-light").pack(anchor="w", pady=2)
+                    nonlocal cb_target_student
+                    cb_target_student = ttk.Combobox(assign_container, values=db_q.get_students_dropdown(cursor), state="readonly", width=38)
+                    cb_target_student.pack(anchor="w", pady=(0, 10))
+                else:
+                    ttk.Label(assign_container, text="Asignar a Docente:", bootstyle="inverse-light").pack(anchor="w", pady=2)
+                    nonlocal cb_target_teacher
+                    cb_target_teacher = ttk.Combobox(assign_container, values=db_q.get_teachers_dropdown(cursor), state="readonly", width=38)
+                    cb_target_teacher.pack(anchor="w", pady=(0, 10))
+
+            cb_target_student = None
+            cb_target_teacher = None
+
+            ttk.Checkbutton(
+                form, text="Prestamo para Estudiante", variable=var_is_student_loan, 
+                bootstyle="square-toggle", command=update_loan_target
+            ).pack(anchor="w", pady=5)
+            
+            assign_container.pack(anchor="w", fill="x", pady=5)
+            update_loan_target()
 
             months_values = [f"{i:02d}" for i in range(1, 13)]
 
@@ -638,14 +1087,35 @@ class InteractiveWorkspace(ttk.Frame):
             sp_day_end, cb_month_end = create_date_picker(form, "Límite")
 
             def register_loan():
-                item_id = cb_item.get()
-                if not item_id:
+                selection_text = cb_item.get()
+                if not selection_text:
                     return messagebox.showerror("Error", "Seleccione un recurso.")
 
-                teacher_sel = cb_teacher.get()
-                student_sel = cb_student.get()
-                teacher_id = int(teacher_sel.split(" - ")[0]) if teacher_sel != "Ninguno" else None
-                student_id = int(student_sel.split(" - ")[0]) if student_sel != "Ninguno" else None
+                if self.name == "instrumentos" and " - " in selection_text:
+                    item_id = selection_text.split(" - ")[-1]
+                elif self.name == "m.d.a":
+                    item_id = selection_text.split("ID: ")[1].replace(")", "")
+                elif self.name == "salones":
+                    if " - " in selection_text:
+                        item_id = selection_text.split(" - ")[-1]
+                    else:
+                        item_id = selection_text.replace("Salon ", "")
+                else:
+                    item_id = selection_text
+
+                student_id = None
+                teacher_id = None
+
+                if var_is_student_loan.get():
+                    sel = cb_target_student.get()
+                    if not sel:
+                        return messagebox.showerror("Error", "Seleccione un estudiante.")
+                    student_id = int(sel.split(" - ")[0])
+                else:
+                    sel = cb_target_teacher.get()
+                    if not sel:
+                        return messagebox.showerror("Error", "Seleccione un docente.")
+                    teacher_id = int(sel.split(" - ")[0])
 
                 current_year = datetime.datetime.now().year
                 start_date = f"{current_year}-{cb_month_start.get()}-{int(sp_day_start.get()):02d}"
@@ -656,6 +1126,9 @@ class InteractiveWorkspace(ttk.Frame):
                     cursor.execute(query, (student_id, teacher_id, int(item_id), start_date, end_date))
 
                     cursor.execute(f"UPDATE {table_name} SET {available_col} = 0 WHERE {id_col} = %s", (int(item_id),))
+                    if self.name == "salones":
+                        cursor.execute("UPDATE salon SET salon_ocupado = 1 WHERE id_salon = %s", (int(item_id),))
+
                     conn.commit()
 
                     messagebox.showinfo("Éxito", "Préstamo registrado.")
@@ -691,6 +1164,9 @@ class InteractiveWorkspace(ttk.Frame):
                     cursor.execute("UPDATE prestamo SET estado = 'Devuelto', fecha_devolucion = %s WHERE id_prestamo = %s", (today, loan_id))
                     
                     cursor.execute(f"UPDATE {table_name} SET {available_col} = 1 WHERE {id_col} = %s", (item_id,))
+                    if self.name == "salones":
+                        cursor.execute("UPDATE salon SET salon_ocupado = 0 WHERE id_salon = %s", (item_id,))
+
                     conn.commit()
 
                     messagebox.showinfo("Éxito", "Recurso devuelto correctamente.")
