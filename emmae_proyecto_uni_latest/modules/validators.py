@@ -1,3 +1,4 @@
+# modules/validator.py
 import re
 import subprocess
 import sys
@@ -16,7 +17,7 @@ def validate_email(email):
     pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
     return bool(re.match(pattern, email))
 
-def show_service_error_dialog(message):
+#def show_service_error_dialog(message):
     root = tk.Tk()
     root.withdraw()
     
@@ -49,7 +50,7 @@ def show_service_error_dialog(message):
     root.wait_window(dialog)
     return ignored[0]
 
-def check_service_status(service_name):
+#def check_service_status(service_name):
     cmd = ['sc', 'query', service_name]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
@@ -59,7 +60,7 @@ def check_service_status(service_name):
         else:
             sys.exit()
     
-    if 'STATE' not in result.stdout:
+    if not result.stdout or 'STATE' not in result.stdout:
         if show_service_error_dialog(f"El servicio '{service_name}' no esta instalado."):
             return
         else:
