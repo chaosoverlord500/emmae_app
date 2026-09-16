@@ -6,12 +6,14 @@ from ttkbootstrap.scrolled import ScrolledFrame
 
 from modules import db_manager as db_q
 from modules import validator as validator
+from ttkbootstrap.widgets.scrolled import ScrolledFrame
+
 
 INSTRUMENTS = ["Piano", "Violin", "Viola", "Chelo", "Bajo", "Guitarra", "Cuatro", "Trompeta", "Trombon", "Percusion", "Flauta Dulce", "Flauta Transversa"]
 STUDENT_INSTRUMENTS = INSTRUMENTS + ["Canto"]
 MDA_ITEMS = ["Pupitre", "Silla", "Atril", "Libro"]
 
-validator.check_service_status("MySQL80")    
+#validator.check_service_status("MySQL80")    
 
 try:
     conn = db_q.connect_to_db()
