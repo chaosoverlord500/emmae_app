@@ -96,9 +96,11 @@ def get_db_credentials():
                 return json.load(f)
         except (json.JSONDecodeError, IOError):
             os.remove(CONFIG_FILE)
+    else:
+        return None
     return {"host": "localhost", "user": "root", "password": "", "database": "emmae_basededatos"}
 
-def ensure_database_exists(creds):
+#def ensure_database_exists(creds):
     try:
         temp_conn = dbconnector.connect(
             host=creds.get("host", "localhost"),
@@ -195,12 +197,9 @@ def ensure_database_exists(creds):
 
 def connect_to_db():
     creds = get_db_credentials()
-    try:
-        ensure_database_exists(creds)
-    except dbconnector.Error as err:
-        if os.path.exists(CONFIG_FILE):
-            os.remove(CONFIG_FILE)
-        raise err
+
+    if creds is None:
+        creds = prompt_db_credentials()
 
     try:
         conn = dbconnector.connect(
@@ -219,3 +218,51 @@ def login(id_number: int, passwd: str) -> bool:
     if id_number == 123 and passwd == "admin":
         return True
     return check_is_admin(id_number) and get_admin_password(id_number) == hash_password(passwd)
+
+# Add this function to modules/db_manager.py
+def save_config(config_data):
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config_data, f, indent=4)
+
+def prompt_db_credentials():
+    import tkinter as tk
+    
+    config = {}
+    root = tk.Tk()
+    root.withdraw()
+    
+    dialog = tk.Toplevel(root)
+    dialog.title("Configuración de Base de Datos")
+    dialog.geometry("360x320")
+    dialog.grab_set()
+    
+    tk.Label(dialog, text="Configurar Conexión a Base de Datos", font=("Arial", 12, "bold")).pack(pady=10)
+    
+    tk.Label(dialog, text="Host:").pack(anchor="w", padx=20)
+    host_entry = tk.Entry(dialog, width=32)
+    host_entry.insert(0, "localhost")
+    host_entry.pack(padx=20, pady=2)
+    
+    tk.Label(dialog, text="Usuario:").pack(anchor="w", padx=20)
+    user_entry = tk.Entry(dialog, width=32)
+    user_entry.insert(0, "root")
+    user_entry.pack(padx=20, pady=2)
+    
+    tk.Label(dialog, text="Contraseña:").pack(anchor="w", padx=20)
+    pass_entry = tk.Entry(dialog, width=32, show="*")
+    pass_entry.pack(padx=20, pady=2)
+    
+    def on_save():
+        config["host"] = host_entry.get().strip() or "localhost"
+        config["user"] = user_entry.get().strip() or "root"
+        config["password"] = pass_entry.get()
+        config["database"] = "emmae_basededatos"
+        
+        save_config(config)
+        dialog.destroy()
+        root.destroy()
+
+    tk.Button(dialog, text="Guardar y Conectar", command=on_save, bg="green", fg="white", width=25).pack(pady=15)
+    
+    root.wait_window(dialog)
+    return config
