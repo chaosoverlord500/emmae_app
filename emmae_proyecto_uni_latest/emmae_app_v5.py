@@ -1,113 +1,24 @@
 import datetime
-import json
-import os
-import re
 import tkinter as tk
 from tkinter import messagebox
 import ttkbootstrap as ttk
 from ttkbootstrap.scrolled import ScrolledFrame
-import mysql.connector as dbconnector
 
-from modules import user_management as User_Manager
-from modules.validators import validate_email, validate_phone_rest, validate_simple_number
-from modules import db_queries as db_q
-
-CONFIG_FILE = "db_config.json"
+from modules import db_manager as db_q
+from modules import validator as validator
 
 INSTRUMENTS = ["Piano", "Violin", "Viola", "Chelo", "Bajo", "Guitarra", "Cuatro", "Trompeta", "Trombon", "Percusion", "Flauta Dulce", "Flauta Transversa"]
 STUDENT_INSTRUMENTS = INSTRUMENTS + ["Canto"]
 MDA_ITEMS = ["Pupitre", "Silla", "Atril", "Libro"]
 
-
-def validate_name_text(text):
-    """Ensures names do not contain numbers or invalid symbols."""
-    return bool(re.match("^[a-zA-ZáéíóúÁÉÍÓÚñÑ\\s]*$", text))
-
-
-def validate_full_email(email):
-    """Validates real and valid email addresses."""
-    pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
-    return bool(re.match(pattern, email))
-
-
-def get_db_credentials():
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    
-    root = tk.Tk()
-    root.withdraw()
-    
-    config = {}
-    dialog = tk.Toplevel(root)
-    dialog.title("Configuración de Base de Datos")
-    dialog.geometry("360x260")
-    dialog.grab_set()
-    
-    tk.Label(dialog, text="Configurar Conexión a Base de Datos", font=("Arial", 12, "bold")).pack(pady=10)
-    
-    tk.Label(dialog, text="Host (Predeterminado: localhost):").pack(anchor="w", padx=20)
-    host_entry = tk.Entry(dialog, width=32)
-    host_entry.insert(0, "localhost")
-    host_entry.pack(padx=20, pady=5)
-    
-    tk.Label(dialog, text="Usuario (Predeterminado: root):").pack(anchor="w", padx=20)
-    user_entry = tk.Entry(dialog, width=32)
-    user_entry.insert(0, "root")
-    user_entry.pack(padx=20, pady=5)
-    
-    tk.Label(dialog, text="Contraseña:").pack(anchor="w", padx=20)
-    pass_entry = tk.Entry(dialog, width=32, show="*")
-    pass_entry.pack(padx=20, pady=5)
-    
-    def save_config():
-        config["host"] = host_entry.get().strip() or "localhost"
-        config["user"] = user_entry.get().strip() or "root"
-        config["password"] = pass_entry.get().strip()
-        config["database"] = "emmae_basededatos"
-        
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(config, f)
-        dialog.destroy()
-        root.destroy()
-        
-    tk.Button(dialog, text="Guardar y Conectar", command=save_config, bg="green", fg="white").pack(pady=15)
-    root.wait_window(dialog)
-    
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
-    return {"host": "localhost", "user": "root", "password": "", "database": "emmae_basededatos"}
-
-
-def connect_to_db():
-    creds = get_db_credentials()
-    conn = ""
-    try:
-        conn = dbconnector.connect(
-            host=creds.get("host", "localhost"),
-            user=creds.get("user", "root"),
-            password=creds.get("password", ""),
-            database=creds.get("database", "emmae_basededatos")
-        )
-        print("Status - Exitoso", "Base de datos conectada")
-        return conn
-    except dbconnector.Error as err:
-        print("Status - Error", f"No se pudo conectar: {err}")
-        if os.path.exists(CONFIG_FILE):
-            os.remove(CONFIG_FILE)
-        raise err
-
+validator.check_service_status("MySQL80")    
 
 try:
-    conn = connect_to_db()
+    conn = db_q.connect_to_db()
     cursor = conn.cursor()
-except ImportError:
-    print("Error connecting to the database")
-
+except Exception as e:
+    print(f"Error connecting to the database: {e}")
+    exit(1)
 
 class LoginScreen(ttk.Frame):
     def __init__(self, master, on_login):
@@ -152,7 +63,7 @@ class LoginScreen(ttk.Frame):
         if id_str in ["Cédula", ""] or password in ["Contraseña", ""]:
             return messagebox.showerror("Error", "Por favor complete todos los campos")
         try:
-            if User_Manager.login(int(id_str), password):
+            if db_q.login(int(id_str), password):
                 self.on_login()
             else:
                 messagebox.showerror("Error", "Datos Incorrectos")
@@ -345,7 +256,7 @@ class InteractiveWorkspace(ttk.Frame):
             chk_admin.pack(anchor="w", pady=5)
 
             entry_email = self.create_labeled_entry(form, "Correo Electrónico:")
-            cb_prefix, entry_phone_rest = self.create_phone_input(form, validate_phone_rest)
+            cb_prefix, entry_phone_rest = self.create_phone_input(form, validator.validate_phone_rest)
 
             btn_save = ttk.Button(form, text=("Modificar" if is_mod else "Guardar Registro"), bootstyle=("primary" if is_mod else "success"))
 
@@ -397,11 +308,11 @@ class InteractiveWorkspace(ttk.Frame):
                     return messagebox.showerror("Error de Validación", "La cédula debe ser un valor numérico.")
                 if not first_name or not last_name:
                     return messagebox.showerror("Error de Validación", "El nombre y apellido son obligatorios.")
-                if not validate_name_text(first_name) or not validate_name_text(last_name):
+                if not validator.validate_name_text(first_name) or not validator.validate_name_text(last_name):
                     return messagebox.showerror("Error de Validación", "Los nombres y apellidos no deben contener números.")
                 if is_admin and not admin_pass:
                     return messagebox.showerror("Error de Validación", "La contraseña es obligatoria para el administrador.")
-                if not validate_full_email(email):
+                if not validator.validate_email(email):
                     return messagebox.showerror("Error de Validación", "El formato del correo electrónico es inválido.")
                 if len(phone_digits) < 7:
                     return messagebox.showerror("Error de Validación", "El número de teléfono tiene caracteres insuficientes.")
@@ -462,7 +373,7 @@ class InteractiveWorkspace(ttk.Frame):
 
             entry_first_name = self.create_labeled_entry(form, "Nombre Estudiante:")
             entry_last_name = self.create_labeled_entry(form, "Apellido Estudiante:")
-            entry_age = self.create_labeled_entry(form, "Edad:", validate_type=validate_simple_number)
+            entry_age = self.create_labeled_entry(form, "Edad:", validate_type=validator.validate_simple_number)
 
             var_has_id = tk.BooleanVar(value=True)
             id_container = ttk.Frame(form)
@@ -505,7 +416,7 @@ class InteractiveWorkspace(ttk.Frame):
 
             entry_year = self.create_labeled_entry(form, "Año Cursante:")
             entry_email = self.create_labeled_entry(form, "Correo Estudiante:")
-            cb_prefix, entry_phone_rest = self.create_phone_input(form, validate_phone_rest)
+            cb_prefix, entry_phone_rest = self.create_phone_input(form, validator.validate_phone_rest)
             entry_rep_phone = self.create_labeled_entry(form, "Teléfono Representante (Opcional):")
             entry_rep_email = self.create_labeled_entry(form, "Correo Representante (Opcional):")
 
@@ -553,11 +464,11 @@ class InteractiveWorkspace(ttk.Frame):
 
                 if not first_name or not last_name:
                     return messagebox.showerror("Error", "Nombre y apellido son obligatorios.")
-                if not validate_name_text(first_name) or not validate_name_text(last_name):
+                if not validator.validate_name_text(first_name) or not validator.validate_name_text(last_name):
                     return messagebox.showerror("Error", "Los nombres y apellidos no deben contener números.")
                 if not is_mod and (not age_str.isdigit() or int(age_str) <= 0 or int(age_str) > 120):
                     return messagebox.showerror("Error", "Por favor ingrese una edad válida y real (positiva).")
-                if not validate_full_email(email):
+                if not validator.validate_email(email):
                     return messagebox.showerror("Error", "El correo electrónico del estudiante no es válido.")
                 if len(phone_digits) < 7:
                     return messagebox.showerror("Error", "El número de teléfono tiene caracteres insuficientes.")
@@ -586,7 +497,7 @@ class InteractiveWorkspace(ttk.Frame):
                         cursor.execute(query, (str(student_id), first_name, last_name, cb_instrument.get(), var_piano.get(), entry_year.get(), f"{cb_prefix.get()}{entry_phone_rest.get()}", email, entry_rep_phone.get(), entry_rep_email.get()))
                     
                     conn.commit()
-                    messagebox.showinfo("Éxito", f"Estudiante {'modificado' : 'guardado'} con identificador: {student_id}")
+                    messagebox.showinfo("Éxito", f"Estudiante con ID: {student_id} guardado correctamente.")
                     self.render_form_view()
                 except Exception as ex:
                     messagebox.showerror("Error", str(ex))
@@ -617,7 +528,6 @@ class InteractiveWorkspace(ttk.Frame):
 
             if is_mod:
                 ttk.Label(self.content_area, text="Seleccione Material (MDA) a Modificar:", bootstyle="inverse-light").pack(anchor="w", pady=2)
-                
                 cursor.execute("SELECT id_mda, tipo_mda, desc_mda FROM material_de_apoyo")
                 mda_rows = cursor.fetchall()
                 mda_dropdown_values = []
@@ -642,10 +552,8 @@ class InteractiveWorkspace(ttk.Frame):
             entry_type.current(0)
             entry_type.pack(anchor="w", pady=(0, 10))
 
-            entry_desc = self.create_labeled_entry(self.content_area, "Descripción (desc_mda):")
-
-            # Changed from Combobox to standard Entry
-            entry_status = self.create_labeled_entry(self.content_area, "Estado del Material (MDA):")
+            entry_desc = self.create_labeled_entry(self.content_area, "Descripción:")
+            entry_status = self.create_labeled_entry(self.content_area, "Estado del Material:")
 
             show_availability = is_mod
             var_available = tk.BooleanVar(value=True)
@@ -1006,7 +914,7 @@ class InteractiveWorkspace(ttk.Frame):
                     cursor.execute(f"SELECT {id_col}, {type_col} FROM {table_name} WHERE {available_col} = 1")
                     available_items = [f"{r[1]} - {r[0]}" for r in cursor.fetchall()]
                 elif self.name == "m.d.a":
-                    cursor.execute(f"SELECT id_mda, tipo_mda, desc_mda FROM material_de_apoyo WHERE mda_disponible = 1")
+                    cursor.execute("SELECT id_mda, tipo_mda, desc_mda FROM material_de_apoyo WHERE mda_disponible = 1")
                     available_items = []
                     for r in cursor.fetchall():
                         mda_id = r[0]
@@ -1110,7 +1018,7 @@ class InteractiveWorkspace(ttk.Frame):
                     sel = cb_target_student.get()
                     if not sel:
                         return messagebox.showerror("Error", "Seleccione un estudiante.")
-                    student_id = int(sel.split(" - ")[0])
+                    student_id = sel.split(" - ")[0]
                 else:
                     sel = cb_target_teacher.get()
                     if not sel:
@@ -1130,7 +1038,6 @@ class InteractiveWorkspace(ttk.Frame):
                         cursor.execute("UPDATE salon SET salon_ocupado = 1 WHERE id_salon = %s", (int(item_id),))
 
                     conn.commit()
-
                     messagebox.showinfo("Éxito", "Préstamo registrado.")
                     self.render_form_view()
                 except Exception as ex:
@@ -1168,7 +1075,6 @@ class InteractiveWorkspace(ttk.Frame):
                         cursor.execute("UPDATE salon SET salon_ocupado = 0 WHERE id_salon = %s", (item_id,))
 
                     conn.commit()
-
                     messagebox.showinfo("Éxito", "Recurso devuelto correctamente.")
                     self.render_form_view()
                 except Exception as ex:
